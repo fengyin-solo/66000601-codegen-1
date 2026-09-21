@@ -1,0 +1,1 @@
+# Backend: Python FastAPI\n\n```bash\ncd backend\npip install -r requirements.txt\nuvicorn app.main:app --reload\n```
