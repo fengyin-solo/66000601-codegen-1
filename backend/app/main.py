@@ -4,6 +4,7 @@ from pydantic import BaseModel
 from typing import List, Optional
 import re
 import uuid
+import random
 from datetime import datetime
 from reportlab.lib.pagesizes import letter
 from reportlab.pdfgen import canvas

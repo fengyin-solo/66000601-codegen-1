@@ -20,13 +20,13 @@
 
 <script setup lang="ts">
 import { computed } from 'vue'
-import { useRoute } from 'vue-router'
+import { useRouter } from 'vue-router'
 
-const route = useRoute()
+const router = useRouter()
 const title = 'Solo Project'
 
 const navRoutes = computed(() => {
-  return (route.options.routes || []).filter((r: any) => r.path !== '*')
+  return (router.options.routes || []).filter((r: any) => r.path !== '*')
 })
 </script>
 
