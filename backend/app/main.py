@@ -1,5 +1,6 @@
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
+from contextlib import asynccontextmanager
 from pydantic import BaseModel
 from typing import List, Optional
 import re
@@ -9,7 +10,17 @@ from datetime import datetime
 from reportlab.lib.pagesizes import letter
 from reportlab.pdfgen import canvas
 
-app = FastAPI(title="Smart Contract Security Auditor")
+from app import db
+from app.db import SEVERITY_ORDER
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    db.init_db()
+    yield
+
+
+app = FastAPI(title="Smart Contract Security Auditor", lifespan=lifespan)
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_credentials=True, allow_methods=["*"], allow_headers=["*"])
 
 # Vulnerability patterns
@@ -69,28 +80,34 @@ class AuditRequest(BaseModel):
     filename: str
 
 def detect_vulnerabilities(code: str) -> List[dict]:
-    """Scan code for vulnerability patterns"""
+    """Scan code for vulnerability patterns, sorted by severity then line."""
     lines = code.split("\n")
+    total_lines = len(lines)
     vulnerabilities = []
-    
+
     for vp in VULNERABILITY_PATTERNS:
         matches = re.finditer(vp["pattern"], code, re.MULTILINE)
         for m in matches:
-            line_num = code[:m.start()].count("\n") + 1
+            line_start = code[:m.start()].count("\n") + 1
+            line_end = code[:m.end()].count("\n") + 1
+            line_end = min(line_end, total_lines)
             # Find context
-            context_start = max(0, line_num - 2)
-            context_end = min(len(lines), line_num + 2)
+            context_start = max(0, line_start - 2)
+            context_end = min(len(lines), line_end + 2)
             context = "\n".join(lines[context_start:context_end])
-            
+
             vulnerabilities.append({
                 "type": vp["type"],
                 "severity": vp["severity"],
-                "line": line_num,
+                "line": line_start,
+                "lineStart": line_start,
+                "lineEnd": line_end,
                 "description": vp["description"],
                 "suggestion": vp["suggestion"],
                 "code": context.strip()
             })
-    
+
+    vulnerabilities.sort(key=lambda v: (SEVERITY_ORDER.get(v["severity"], 9), v["lineStart"]))
     return vulnerabilities
 
 def compute_gas_issues(code: str) -> List[dict]:
@@ -125,24 +142,47 @@ async def list_patterns():
 
 @app.post("/api/audit")
 async def audit_contract(request: AuditRequest):
+    if not request.code.strip():
+        raise HTTPException(status_code=400, detail="合约代码不能为空")
     vulnerabilities = detect_vulnerabilities(request.code)
     gas_issues = compute_gas_issues(request.code)
     score = compute_security_score(vulnerabilities)
-    
+    timestamp = datetime.now().isoformat()
+    audit_id = str(uuid.uuid4())
+
+    # 重复提交（相同代码）合并为台账中的同一条，不产生重复记录
+    dedup = db.save_audit(
+        audit_id=audit_id,
+        filename=request.filename or "未命名合约.sol",
+        code=request.code,
+        score=score,
+        vulnerabilities=vulnerabilities,
+        timestamp=timestamp,
+    )
+
     result = {
-        "id": str(uuid.uuid4()),
+        "id": audit_id,
         "filename": request.filename,
         "score": score,
         "vulnerabilities": vulnerabilities,
         "gasIssues": gas_issues,
-        "timestamp": datetime.now().isoformat()
+        "timestamp": timestamp,
+        "duplicated": dedup["duplicated"],
+        "auditCount": dedup["audit_count"],
+        "codeHash": db.code_hash(request.code),
     }
-    
+
     return {"code": 0, "message": "success", "data": result}
+
+@app.get("/api/ledger")
+async def get_ledger():
+    """风险台账：按合约聚合，漏洞按严重程度排列，可展开查看行号区间与修复建议。"""
+    return {"code": 0, "message": "success", "data": db.list_ledger()}
 
 @app.get("/api/history")
 async def get_history():
-    return {"code": 0, "message": "success", "data": []}
+    """审计历史与风险台账共用同一份数据源，条目数一一对应。"""
+    return {"code": 0, "message": "success", "data": db.list_history()}
 
 @app.post("/api/report/{audit_id}")
 async def generate_report(audit_id: str):
