@@ -41,17 +41,18 @@
 
 <script setup lang="ts">
 import { ref, computed } from "vue"
+import axios from "axios"
 
 const contractCode = ref(`// SPDX-License-Identifier: MIT
 pragma solidity ^0.8.0;
 
 contract SimpleBank {
     mapping(address => uint) public balances;
-    
+
     function deposit() public payable {
         balances[msg.sender] += msg.value;
     }
-    
+
     function withdraw(uint amount) public {
         require(balances[msg.sender] >= amount);
         (bool success,) = msg.sender.call{value: amount}("");
@@ -80,8 +81,23 @@ const scoreGrade = computed(() => {
 
 async function runAudit() {
   isAuditing.value = true
-  await new Promise(r => setTimeout(r, 1500))
-  
+  try {
+    // 提交即时审计，结果同步汇入后端风险台账（同一合约重复提交自动归并）
+    const res = await axios.post("/api/audit", {
+      code: contractCode.value,
+      filename: filename.value || "未命名合约.sol"
+    })
+    result.value = res.data.data
+  } catch {
+    // 后端不可用时回退为本地即时检测，保持原入口可用（本地结果不会计入台账）
+    await new Promise(r => setTimeout(r, 1500))
+    result.value = simulateLocal()
+  } finally {
+    isAuditing.value = false
+  }
+}
+
+function simulateLocal() {
   // Simulate vulnerability detection
   const vulns = []
   if (contractCode.value.includes("msg.sender.call")) {
@@ -102,8 +118,8 @@ async function runAudit() {
       suggestion: "使用 SafeMath 库或在 Solidity 0.8+ 环境中编译。"
     })
   }
-  
-  result.value = {
+
+  return {
     score: vulns.length === 0 ? 95 : Math.max(20, 85 - vulns.length * 25),
     vulnerabilities: vulns,
     gasIssues: [
@@ -111,7 +127,6 @@ async function runAudit() {
       { functionName: "withdraw()", currentGas: 52000, optimizedGas: 31000, suggestion: "使用 local 变量缓存 balances[msg.sender]" }
     ]
   }
-  isAuditing.value = false
 }
 </script>
 
